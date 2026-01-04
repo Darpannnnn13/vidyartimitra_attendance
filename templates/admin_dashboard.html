@@ -76,6 +76,10 @@
   <button class="btn btn-outline-danger" type="button" data-bs-toggle="collapse" data-bs-target="#holidayDropdown" aria-expanded="false" aria-controls="holidayDropdown">
     <i class="fa-solid fa-calendar-plus"></i> Manage Holidays
   </button>
+
+  <button class="btn btn-outline-warning text-dark" type="button" data-bs-toggle="collapse" data-bs-target="#leaveDropdown" aria-expanded="false" aria-controls="leaveDropdown">
+    <i class="fa-solid fa-envelope-open-text"></i> Leave Requests {% if pending_leaves %}<span class="badge bg-danger rounded-pill">{{ pending_leaves|length }}</span>{% endif %}
+  </button>
 </div>
 
 <!-- COLLAPSIBLE INTERN LIST -->
@@ -146,6 +150,16 @@
                     <input type="number" class="form-control" name="daily_hours" value="{{ i.daily_hours|default(8) }}" required>
                   </div>
 
+                  <div class="mb-2">
+                    <label class="form-label">Joining Date</label>
+                    <input type="date" class="form-control" name="joining_date" value="{{ i.joining_date }}">
+                  </div>
+
+                  <div class="mb-2">
+                    <label class="form-label">Ending Date</label>
+                    <input type="date" class="form-control" name="ending_date" value="{{ i.ending_date }}">
+                  </div>
+
                   <button class="btn btn-primary btn-sm mt-2">Update</button>
 
                 </form>
@@ -201,6 +215,39 @@
   </div>
 </div>
 
+<!-- COLLAPSIBLE LEAVE REQUESTS -->
+<div class="collapse" id="leaveDropdown">
+    <div class="card card-body mb-4 border-warning border-opacity-25" style="background-color: #fffbf0;">
+        <h5><i class="fa-solid fa-envelope-open-text"></i> Pending Leave Requests</h5>
+        
+        <div class="table-responsive mt-3">
+            <table class="table table-sm table-bordered bg-white">
+                <thead class="table-light">
+                    <tr><th>Intern</th><th>Dates</th><th>Reason</th><th>Action</th></tr>
+                </thead>
+                <tbody>
+                    {% for l in pending_leaves %}
+                    <tr>
+                        <td class="fw-bold">{{ l.intern_name }}</td>
+                        <td>{{ l.start_date }} <i class="fa-solid fa-arrow-right small text-muted"></i> {{ l.end_date }}</td>
+                        <td>{{ l.reason }}</td>
+                        <td>
+                            <form method="POST" action="{{ url_for('manage_leave') }}" class="d-flex gap-1">
+                                <input type="hidden" name="leave_id" value="{{ l._id }}">
+                                <button name="action" value="Approved" class="btn btn-success btn-sm py-0 px-2"><i class="fa-solid fa-check"></i></button>
+                                <button name="action" value="Rejected" class="btn btn-danger btn-sm py-0 px-2"><i class="fa-solid fa-xmark"></i></button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% else %}
+                    <tr><td colspan="4" class="text-center text-muted">No pending leave requests.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
 <hr>
 
 <div class="row">
@@ -252,7 +299,13 @@
   <!-- RIGHT: ATTENDANCE TABLE -->
   <div class="col-md-8">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h5 class="text-primary m-0"><i class="fa-solid fa-clipboard-user"></i> Attendance Records</h5>
+        <div class="d-flex align-items-center gap-3">
+            <h5 class="text-primary m-0"><i class="fa-solid fa-clipboard-user"></i> Attendance Records</h5>
+            <div class="form-check form-switch m-0" title="Show only interns who worked less than target hours">
+                <input class="form-check-input" type="checkbox" id="earlyLeaverSwitch" onclick="toggleEarlyLeavers()" style="cursor: pointer;">
+                <label class="form-check-label small fw-bold text-muted" for="earlyLeaverSwitch" style="cursor: pointer;">Early Leavers</label>
+            </div>
+        </div>
         
         <!-- DOWNLOAD EXCEL -->
         <form method="POST" action="{{ url_for('download_excel') }}">
@@ -277,7 +330,7 @@
 
       <tbody class="bg-white">
         {% for r in records %}
-        <tr class="{% if r.status == 'Present' %}bg-opacity-10 bg-success{% else %}bg-opacity-10 bg-danger{% endif %}">
+        <tr class="attendance-row {% if r.status == 'Present' %}bg-opacity-10 bg-success{% else %}bg-opacity-10 bg-danger{% endif %}" data-early-leaver="{{ r.is_early_leaver|lower }}">
           <td>
             <a href="{{ url_for('admin_intern_profile', user_id=r.user_id) }}" class="text-decoration-none fw-bold text-dark">
                 {{ r.name }} <i class="fa-solid fa-arrow-up-right-from-square small text-muted ms-1"></i>
@@ -287,7 +340,12 @@
           <td>{{ r.work_type }}</td>
           <td>{{ r.login_time }}</td>
           <td>{{ r.logout_time or "-" }}</td>
-          <td>{{ r.hours_worked or "-" }}</td>
+          <td>
+            {{ r.hours_worked or "-" }}
+            {% if r.is_early_leaver %}
+                <i class="fa-solid fa-triangle-exclamation text-warning ms-1" title="Early Leaver (Target not met)" data-bs-toggle="tooltip"></i>
+            {% endif %}
+          </td>
 
           <td>
             {% if r.status == "Present" %}
@@ -308,5 +366,21 @@
     {% endif %}
   </div>
 </div>
+
+<script>
+function toggleEarlyLeavers() {
+    const isChecked = document.getElementById('earlyLeaverSwitch').checked;
+    const rows = document.querySelectorAll('.attendance-row');
+    
+    rows.forEach(row => {
+        const isEarly = row.getAttribute('data-early-leaver') === 'true';
+        if (isChecked && !isEarly) {
+            row.style.display = 'none';
+        } else {
+            row.style.display = '';
+        }
+    });
+}
+</script>
 
 {% endblock %}

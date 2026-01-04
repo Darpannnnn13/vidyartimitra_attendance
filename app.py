@@ -1086,6 +1086,7 @@ db = client["attendance_system"]
 users_col = db["users"]
 attendance_col = db["attendance"]
 holidays_col = db["holidays"]
+leaves_col = db["leaves"]
 
 
 # -----------------------------------------
@@ -1200,6 +1201,11 @@ def intern_dashboard():
     total_minutes = 0
     work_type_counts = {}
     total_days_worked = len(monthly_records)
+    
+    # Chart Data
+    chart_labels = []
+    chart_data = []
+    daily_hours_target = int(user.get("daily_hours", 8))
 
     for r in monthly_records:
         hw = r.get("hours_worked")
@@ -1210,12 +1216,25 @@ def intern_dashboard():
                 h = int(parts[0].replace("h", ""))
                 m = int(parts[1].replace("m", ""))
                 total_minutes += (h * 60) + m
+                
+                # For Chart (Float hours)
+                float_hours = h + (m / 60)
+                chart_labels.append(r["date"][8:]) # Just the day part
+                chart_data.append(round(float_hours, 2))
+                
+                # Early Leaver Indicator
+                if float_hours < daily_hours_target and r.get("work_type") != "Holiday":
+                    r["early_leaver"] = True
             except:
                 pass
         
         # Count Work Types for Stats
         wt = r.get("work_type", "Other")
         work_type_counts[wt] = work_type_counts.get(wt, 0) + 1
+    
+    # Reverse lists for chart so they are chronological (since records are sorted desc)
+    chart_labels.reverse()
+    chart_data.reverse()
     
     hours = total_minutes // 60
     minutes = total_minutes % 60
@@ -1226,8 +1245,13 @@ def intern_dashboard():
     standard_hours_val = total_days_worked * daily_hours
     standard_hours_str = f"{standard_hours_val}h"
 
+    # Fetch Leaves
+    leaves = list(leaves_col.find({"user_id": user["_id"]}).sort("start_date", -1))
+
     # Fetch Holidays from DB
     holidays = list(holidays_col.find({}).sort("date", 1))
+    joining_date = user.get("joining_date")
+    ending_date = user.get("ending_date")
 
     # --- Calendar Logic ---
     try:
@@ -1239,48 +1263,6 @@ def intern_dashboard():
     # Get matrix of month (0 = Monday, ..., 6 = Sunday)
     month_cal = calendar.monthcalendar(year, month)
     
-    # --- Merge Holidays into History Records ---
-    # 1. Track dates that already have records (Attendance)
-    existing_dates = {r["date"] for r in monthly_records}
-    
-    # 2. Find Admin Holidays in the selected month
-    month_holidays = [h for h in holidays if h["date"].startswith(selected_month)]
-    
-    for h in month_holidays:
-        if h["date"] not in existing_dates:
-            monthly_records.append({
-                "date": h["date"],
-                "work_type": "Holiday",
-                "login_time": "-",
-                "logout_time": "-",
-                "hours_worked": "-",
-                "status": "Holiday",
-                "holiday_name": h["name"]
-            })
-            existing_dates.add(h["date"])
-
-    # 3. Find Sundays in the selected month
-    sunday_dates = []
-    for week in month_cal:
-        if week[6] != 0:
-            sunday_dates.append(f"{year}-{month:02d}-{week[6]:02d}")
-
-    for s_date in sunday_dates:
-        if s_date not in existing_dates:
-            monthly_records.append({
-                "date": s_date,
-                "work_type": "Holiday",
-                "login_time": "-",
-                "logout_time": "-",
-                "hours_worked": "-",
-                "status": "Holiday",
-                "holiday_name": "Sunday"
-            })
-            existing_dates.add(s_date)
-
-    # 4. Re-sort records by date (descending)
-    monthly_records.sort(key=lambda x: x["date"], reverse=True)
-
     # Check if today is a holiday (for the Mark Attendance form)
     today_dt = now_ist()
     today_str = today_dt.strftime("%Y-%m-%d")
@@ -1320,9 +1302,14 @@ def intern_dashboard():
                     circle_color = "green"
                     tooltip = "Office"
             elif not is_holiday and not is_sunday and date_str < today_str:
-                # Absent: Past date, no record, not holiday, not sunday
-                circle_color = "red"
-                tooltip = "Absent"
+                # Absent: Check if within employment period
+                is_active = True
+                if joining_date and date_str < joining_date: is_active = False
+                if ending_date and date_str > ending_date: is_active = False
+                
+                if is_active:
+                    circle_color = "red"
+                    tooltip = "Absent"
             
             week_data.append({
                 "day": day, 
@@ -1346,7 +1333,10 @@ def intern_dashboard():
                            total_days_worked=total_days_worked,
                            calendar_data=calendar_data,
                            standard_hours_str=standard_hours_str,
-                           today_holiday=today_holiday)
+                           today_holiday=today_holiday,
+                           leaves=leaves,
+                           chart_labels=chart_labels,
+                           chart_data=chart_data)
 
 
 # MARK LOGIN
@@ -1409,6 +1399,27 @@ def mark_logout():
     )
 
     flash("Logout marked!", "success")
+    return redirect(url_for("intern_dashboard"))
+
+
+# APPLY LEAVE
+@app.route("/intern/apply-leave", methods=["POST"])
+@login_required(role="intern")
+def apply_leave():
+    user_id = ObjectId(session["user_id"])
+    start_date = request.form.get("start_date")
+    end_date = request.form.get("end_date")
+    reason = request.form.get("reason")
+    
+    leaves_col.insert_one({
+        "user_id": user_id,
+        "start_date": start_date,
+        "end_date": end_date,
+        "reason": reason,
+        "status": "Pending",
+        "applied_on": now_ist()
+    })
+    flash("Leave application submitted.", "success")
     return redirect(url_for("intern_dashboard"))
 
 
@@ -1497,6 +1508,13 @@ def admin_dashboard():
 
     # Get all interns
     interns = list(users_col.find({"role": "intern"}))
+    
+    # Get Pending Leaves
+    pending_leaves = list(leaves_col.find({"status": "Pending"}))
+    for l in pending_leaves:
+        u = users_col.find_one({"_id": l["user_id"]})
+        if u:
+            l["intern_name"] = u["full_name"]
 
     # Get attendance records for selected date
     attendance_records = list(attendance_col.find({"date": date}))
@@ -1507,14 +1525,32 @@ def admin_dashboard():
     # Check if selected date is a holiday
     holiday_record = holidays_col.find_one({"date": date})
     is_sunday = (datetime.strptime(date, "%Y-%m-%d").weekday() == 6)
+    today_str = now_ist().strftime("%Y-%m-%d")
 
     final_rows = []
 
     for intern in interns:
         intern_id = str(intern["_id"])
+        joining_date = intern.get("joining_date")
+        ending_date = intern.get("ending_date")
+        daily_hours = int(intern.get("daily_hours", 8))
+        is_early_leaver = False
 
         if intern_id in attendance_map:
             r = attendance_map[intern_id]
+            
+            # Calculate Early Leaver Status
+            hw = r.get("hours_worked")
+            if hw and "h" in hw:
+                try:
+                    parts = hw.split(" ")
+                    h = int(parts[0].replace("h", ""))
+                    m = int(parts[1].replace("m", ""))
+                    if (h + m/60) < daily_hours:
+                        is_early_leaver = True
+                except:
+                    pass
+
             final_rows.append({
                 "user_id": intern_id,
                 "name": intern["full_name"],
@@ -1523,11 +1559,18 @@ def admin_dashboard():
                 "login_time": r.get("login_time", "-"),
                 "logout_time": r.get("logout_time", "-"),
                 "hours_worked": r.get("hours_worked", "-"),
-                "status": "Present"
+                "status": "Present",
+                "is_early_leaver": is_early_leaver
             })
         else:
             status = "Absent"
-            if holiday_record:
+            if joining_date and date < joining_date:
+                status = "-"
+            elif ending_date and date > ending_date:
+                status = "-"
+            elif date > today_str:
+                status = "-"
+            elif holiday_record:
                 status = f"Holiday: {holiday_record['name']}"
             elif is_sunday:
                 status = "Holiday: Sunday"
@@ -1540,7 +1583,8 @@ def admin_dashboard():
                 "login_time": "-",
                 "logout_time": "-",
                 "hours_worked": "-",
-                "status": status
+                "status": status,
+                "is_early_leaver": False
             })
 
     # Sort: Present first → Absent later
@@ -1601,7 +1645,8 @@ def admin_dashboard():
                            calendar_month=calendar_month,
                            total_interns=total_interns_count,
                            present_count=present_count,
-                           absent_count=absent_count)
+                           absent_count=absent_count,
+                           pending_leaves=pending_leaves)
 
 
 @app.route("/admin/intern-profile/<user_id>")
@@ -1664,47 +1709,6 @@ def admin_intern_profile(user_id):
     standard_hours_val = len(monthly_records) * daily_hours
     standard_hours_str = f"{standard_hours_val}h"
 
-    # --- Merge Holidays & Sundays for History Display ---
-    holidays = list(holidays_col.find({}).sort("date", 1))
-    existing_dates = {r["date"] for r in monthly_records}
-
-    # Admin Holidays
-    month_holidays = [h for h in holidays if h["date"].startswith(selected_month)]
-    for h in month_holidays:
-        if h["date"] not in existing_dates:
-            monthly_records.append({
-                "date": h["date"],
-                "work_type": "Holiday",
-                "login_time": "-",
-                "logout_time": "-",
-                "hours_worked": "-",
-                "status": "Holiday",
-                "holiday_name": h["name"]
-            })
-            existing_dates.add(h["date"])
-
-    # Sundays
-    try:
-        y, m = map(int, selected_month.split('-'))
-        month_cal = calendar.monthcalendar(y, m)
-        for week in month_cal:
-            if week[6] != 0:
-                s_date = f"{y}-{m:02d}-{week[6]:02d}"
-                if s_date not in existing_dates:
-                    monthly_records.append({
-                        "date": s_date,
-                        "work_type": "Holiday",
-                        "login_time": "-",
-                        "logout_time": "-",
-                        "hours_worked": "-",
-                        "status": "Holiday",
-                        "holiday_name": "Sunday"
-                    })
-                    existing_dates.add(s_date)
-    except: pass
-
-    monthly_records.sort(key=lambda x: x["date"], reverse=True)
-
     return render_template("admin_intern_profile.html",
                            user=user,
                            selected_month=selected_month,
@@ -1742,6 +1746,18 @@ def delete_holiday():
     flash("Holiday deleted.", "success")
     return redirect(url_for("admin_dashboard"))
 
+@app.route("/admin/manage-leave", methods=["POST"])
+@login_required(role="admin")
+def manage_leave():
+    leave_id = request.form.get("leave_id")
+    action = request.form.get("action") # 'Approved' or 'Rejected'
+    
+    if action in ["Approved", "Rejected"]:
+        leaves_col.update_one({"_id": ObjectId(leave_id)}, {"$set": {"status": action}})
+        flash(f"Leave request {action}.", "success")
+    
+    return redirect(url_for("admin_dashboard"))
+
 @app.route("/admin/delete-intern", methods=["POST"])
 @login_required(role="admin")
 def delete_intern():
@@ -1771,6 +1787,8 @@ def update_intern():
     username = request.form.get("username").strip()
     password = request.form.get("password").strip()
     daily_hours = request.form.get("daily_hours", 8)
+    joining_date = request.form.get("joining_date")
+    ending_date = request.form.get("ending_date")
 
     user = users_col.find_one({"username": original_username})
     if not user:
@@ -1781,7 +1799,9 @@ def update_intern():
         "full_name": full_name,
         "username": username,
         "password": password,
-        "daily_hours": int(daily_hours)
+        "daily_hours": int(daily_hours),
+        "joining_date": joining_date,
+        "ending_date": ending_date
     }
 
     users_col.update_one({"_id": user["_id"]}, {"$set": update_data})
@@ -1824,6 +1844,35 @@ def download_excel():
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+@app.route("/admin/download-intern-report/<user_id>")
+@login_required(role="admin")
+def download_intern_report(user_id):
+    user = users_col.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        flash("Intern not found", "danger")
+        return redirect(url_for("admin_dashboard"))
+
+    records = list(attendance_col.find({"user_id": ObjectId(user_id)}).sort("date", -1))
+
+    rows = []
+    for r in records:
+        rows.append({
+            "Date": r.get("date"),
+            "Work Type": r.get("work_type", "-"),
+            "Login Time": r.get("login_time", "-"),
+            "Logout Time": r.get("logout_time", "-"),
+            "Hours Worked": r.get("hours_worked", "-"),
+            "Status": r.get("status", "-")
+        })
+
+    df = pd.DataFrame(rows)
+    output = BytesIO()
+    df.to_excel(output, index=False)
+    output.seek(0)
+
+    filename = f"Report_{user['username']}.xlsx"
+    return send_file(output, download_name=filename, as_attachment=True, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
 
 
 # -----------------------------------------
@@ -1837,6 +1886,7 @@ def add_intern():
         username = request.form["username"].strip()
         password = request.form["password"].strip()
         daily_hours = request.form.get("daily_hours", 8)
+        joining_date = request.form.get("joining_date")
 
         if users_col.find_one({"username": username}):
             flash("Username already exists!", "danger")
@@ -1847,7 +1897,8 @@ def add_intern():
             "username": username,
             "password": password,
             "role": "intern",
-            "daily_hours": int(daily_hours)
+            "daily_hours": int(daily_hours),
+            "joining_date": joining_date
         })
 
         flash("Intern added successfully!", "success")

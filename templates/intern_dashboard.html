@@ -41,6 +41,16 @@
         <span><i class="fa-solid fa-id-badge"></i> Username:</span>
         <strong>{{ user.username }}</strong>
       </div>
+      {% if user.joining_date %}
+      <div class="d-flex justify-content-between mt-2 small text-muted">
+        <span>Joined:</span> <strong>{{ user.joining_date }}</strong>
+      </div>
+      {% endif %}
+      {% if user.ending_date %}
+      <div class="d-flex justify-content-between mt-1 small text-muted">
+        <span>Ends:</span> <strong>{{ user.ending_date }}</strong>
+      </div>
+      {% endif %}
     </div>
 
     <!-- Monthly Stats Card -->
@@ -62,6 +72,12 @@
         <span class="small opacity-75">Standard Target</span>
         <span class="fw-bold">{{ standard_hours_str }}</span>
       </div>
+    </div>
+
+    <!-- VISUAL ANALYTICS CHART -->
+    <div class="card p-4 mb-3">
+        <h6 class="text-primary mb-3"><i class="fa-solid fa-chart-simple"></i> Daily Hours Trend</h6>
+        <canvas id="hoursChart" style="max-height: 200px;"></canvas>
     </div>
 
     <!-- Work Location Stats -->
@@ -103,6 +119,9 @@
         </li>
         <li class="nav-item" role="presentation">
           <button class="nav-link text-dark" id="history-tab" data-bs-toggle="tab" data-bs-target="#history" type="button" role="tab">Attendance History</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link text-dark" id="leaves-tab" data-bs-toggle="tab" data-bs-target="#leaves" type="button" role="tab">Leaves</button>
         </li>
         <li class="nav-item" role="presentation">
           <button class="nav-link text-dark" id="holidays-tab" data-bs-toggle="tab" data-bs-target="#holidays" type="button" role="tab">Holidays</button>
@@ -173,7 +192,12 @@
                     {% endif %}
                   </td>
                   <td>{{ row.logout_time }}</td>
-                  <td>{{ row.hours_worked }}</td>
+                  <td>
+                    {{ row.hours_worked }}
+                    {% if row.early_leaver %}
+                        <span class="badge bg-warning text-dark ms-1" style="font-size: 0.65rem;">Early Leaver</span>
+                    {% endif %}
+                  </td>
                 </tr>
                 {% else %}
                 <tr><td colspan="4" class="text-center text-muted">No records found for {{ selected_month }}.</td></tr>
@@ -183,7 +207,48 @@
           </div>
         </div>
 
-        <!-- TAB 3: HOLIDAYS -->
+        <!-- TAB 3: LEAVES -->
+        <div class="tab-pane fade" id="leaves" role="tabpanel">
+            <h5 class="mb-3 text-primary">Apply for Leave</h5>
+            <form method="POST" action="{{ url_for('apply_leave') }}" class="mb-4 p-3 bg-light rounded">
+                <div class="row g-2">
+                    <div class="col-md-6">
+                        <label class="small fw-bold">Start Date</label>
+                        <input type="date" name="start_date" class="form-control" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="small fw-bold">End Date</label>
+                        <input type="date" name="end_date" class="form-control" required>
+                    </div>
+                    <div class="col-12">
+                        <label class="small fw-bold">Reason</label>
+                        <textarea name="reason" class="form-control" rows="2" required></textarea>
+                    </div>
+                    <div class="col-12 text-end mt-2">
+                        <button class="btn btn-primary btn-sm">Submit Request</button>
+                    </div>
+                </div>
+            </form>
+
+            <h6 class="text-muted border-bottom pb-2">Leave History</h6>
+            <ul class="list-group list-group-flush">
+                {% for l in leaves %}
+                <li class="list-group-item d-flex justify-content-between align-items-center px-0">
+                    <div>
+                        <div class="fw-bold">{{ l.start_date }} to {{ l.end_date }}</div>
+                        <small class="text-muted">{{ l.reason }}</small>
+                    </div>
+                    <span class="badge {% if l.status == 'Approved' %}bg-success{% elif l.status == 'Rejected' %}bg-danger{% else %}bg-warning text-dark{% endif %}">
+                        {{ l.status }}
+                    </span>
+                </li>
+                {% else %}
+                <li class="list-group-item text-muted text-center">No leave requests found.</li>
+                {% endfor %}
+            </ul>
+        </div>
+
+        <!-- TAB 4: HOLIDAYS -->
         <div class="tab-pane fade" id="holidays" role="tabpanel">
           <h5 class="mb-3 text-primary">Upcoming Holidays</h5>
           <ul class="list-group">
@@ -238,5 +303,33 @@
 
   </div>
 </div>
+
+<script>
+  // Chart.js Initialization
+  const ctx = document.getElementById('hoursChart').getContext('2d');
+  const hoursChart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+          labels: {{ chart_labels | tojson }},
+          datasets: [{
+              label: 'Hours Worked',
+              data: {{ chart_data | tojson }},
+              backgroundColor: 'rgba(255, 140, 0, 0.6)',
+              borderColor: 'rgba(255, 140, 0, 1)',
+              borderWidth: 1,
+              borderRadius: 5
+          }]
+      },
+      options: {
+          responsive: true,
+          scales: {
+              y: {
+                  beginAtZero: true,
+                  suggestedMax: 10
+              }
+          }
+      }
+  });
+</script>
 
 {% endblock %}
